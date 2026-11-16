@@ -1,0 +1,74 @@
+# Teste de envio: roda no repositorio do GRUPO (nao aqui) a cada push, ou pelo botao "Run workflow".
+#  1. Analise preliminar: os mesmos portoes e o verificador oficial do envio de verdade.
+#  2. Se passar, segunda analise por IA no servidor do professor (1 por grupo por dia), que devolve
+#     um retorno tecnico sobre o codigo.
+# Nada disto e o envio: o envio de verdade e o pull request na vitrine, depois da apresentacao.
+name: Teste de envio
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # comprova ao servidor de que repositorio vem o pedido (nao da acesso a nada)
+
+jobs:
+  teste:
+    if: github.repository != 'LuizRMSilva1973/compiladores-lab'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: 1. Analise preliminar
+        id: prelim
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/LuizRMSilva1973/compiladores-mpl-2026-2/main/.github/scripts/pre_aceitacao.py -o /tmp/pre_aceitacao.py
+          set +e
+          python3 /tmp/pre_aceitacao.py --publico --teste --pasta "$GITHUB_WORKSPACE" --laudo /tmp/laudo.md
+          rc=$?
+          set -e
+          cat /tmp/laudo.md >> "$GITHUB_STEP_SUMMARY"
+          if grep -q 'APROVADO NA ANALISE PRELIMINAR' /tmp/laudo.md; then echo "aprovado=true" >> "$GITHUB_OUTPUT"; fi
+          exit $rc
+
+      - name: 2. Segunda analise (IA) — retorno tecnico
+        if: steps.prelim.outputs.aprovado == 'true'
+        run: |
+          TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=compiladores-mpl-2026-2" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          tar czf /tmp/codigo.tgz --exclude=.git --exclude=testes --exclude=evidencias --exclude=exemplos \
+            --exclude=__pycache__ --exclude='*.mplb' --exclude='*.class' --exclude='*.o' .
+          codigo=$(curl -sS --max-time 600 -o /tmp/ia.json -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/gzip' \
+            --data-binary @/tmp/codigo.tgz https://envios.mantovanitec.com/compiladores/revisar || echo 000)
+          python3 - "$codigo" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          http = sys.argv[1]
+          print('\n## 2. Segunda analise (IA)\n')
+          try:
+              r = json.load(open('/tmp/ia.json', encoding='utf-8'))
+          except Exception:
+              r = {'ok': False, 'erro': f'o servidor nao respondeu (HTTP {http}). Tentem mais tarde.'}
+          if not r.get('ok'):
+              print(f'> Nao foi feita agora: {r.get("erro")}\n')
+              print('Isto nao reprova nada: a analise preliminar acima continua valendo.')
+              sys.exit(0)
+          q = r['retorno']['qualidade']
+          print(r['mensagem'] + '\n')
+          print('| Criterio | Nota (1 a 5) |\n|---|---|')
+          for k, rot in [('organizacao_por_fases', 'Organizacao por fases'), ('clareza_e_nomes', 'Clareza e nomes'),
+                         ('tratamento_de_erros', 'Tratamento de erros'), ('aderencia_a_mpl', 'Aderencia a MPL')]:
+              print(f'| {rot} | {q[k]} |')
+          print('\n' + q['comentario'] + '\n')
+          if r['retorno']['pontos_fortes']:
+              print('**Pontos fortes**\n'); [print(f'- {x}') for x in r['retorno']['pontos_fortes']]; print()
+          if r['retorno']['problemas']:
+              print('**O que melhorar**\n'); [print(f'- {x}') for x in r['retorno']['problemas']]; print()
+          print('_Retorno automatico, sem nota. A avaliacao continua sendo a do professor e a da apresentacao._')
+          PY

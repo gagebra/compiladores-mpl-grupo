@@ -1,3 +1,290 @@
+# Compilador MPL do grupo
+
+Compilador completo para a MPL (`LINGUAGEM.md`), escrito em Python 3 só com
+a biblioteca padrão, sem gerador de parser. As quatro fases ficam em `mplc/`:
+
+| Fase | Arquivo | Despejo |
+|---|---|---|
+| Léxico | `mplc/lexico.py` | `./compilar --tokens prog.mpl` |
+| Sintático | `mplc/sintatico.py` | `./compilar --ast prog.mpl` |
+| Semântico | `mplc/semantica.py` | `./compilar --tabela prog.mpl` |
+| Intermediário | `mplc/intermediario.py` | `./compilar --ir prog.mpl` |
+| Geração | `mplc/gerador.py` | `./compilar prog.mpl` grava `prog.mplb` |
+| Máquina virtual | `mplc/vm.py` | `./executar prog.mplb` |
+
+```bash
+make verificar          # as quatro entregas: 93 de 93
+./compilar exemplos/demonstracao.mpl && ./executar exemplos/demonstracao.mplb
+```
+
+---
+
+## Entrega 1: tabela de tokens
+
+O léxico é um autômato escrito à mão (`Lexico.analisar`). Ele lê caractere
+por caractere, contando linha e coluna a partir de 1, e escolhe o
+sub-autômato pelo primeiro caractere. Os símbolos de dois caracteres são
+sempre testados **antes** dos de um, para `<=` não virar `<` `=`.
+
+| TIPO | Expressão regular / regra | Exemplo |
+|---|---|---|
+| `ID` | `[A-Za-z_][A-Za-z0-9_]*` que não seja palavra reservada | `soma`, `_x1` |
+| `INTEIRO` | `[0-9]+` | `42` |
+| `REAL` | `[0-9]+\.[0-9]+` (dígito obrigatório dos dois lados) | `3.14` |
+| `LOGICO` | `verdadeiro` \| `falso` | `falso` |
+| `TEXTO` | `"([^"\\\n]` \| `\\[nt"\\])*"` (numa linha só) | `"a\nb"` |
+| `FUNCAO` `RETORNE` `SE` `SENAO` `ENQUANTO` `ESCREVA` | a palavra exata | `funcao` |
+| `TIPO_INTEIRO` `TIPO_REAL` `TIPO_LOGICO` `TIPO_TEXTO` `TIPO_VAZIO` | `inteiro` `real` `logico` `texto` `vazio` | |
+| `E` `OU` `NAO` | `e` `ou` `nao` | |
+| `MAIS` `MENOS` `VEZES` `DIVIDE` `RESTO` | `+` `-` `*` `/` `%` | |
+| `IGUAL` `DIFERENTE` | `==` `!=` | |
+| `MENOR_IGUAL` `MAIOR_IGUAL` | `<=` `>=` | |
+| `MENOR` `MAIOR` | `<` `>` | |
+| `ATRIBUI` | `=` | |
+| `ABRE_PAR` `FECHA_PAR` `ABRE_CHAVE` `FECHA_CHAVE` | `(` `)` `{` `}` | |
+| `VIRGULA` `PONTO_VIRGULA` | `,` `;` | |
+| `FIM_ARQUIVO` | fim da entrada (lexema vazio) | |
+| *(descartado)* espaço | `[ \t\r\n]+` | |
+| *(descartado)* comentário de linha | `//[^\n]*` | |
+| *(descartado)* comentário de bloco | `/\*` … primeiro `*/` (não aninha) | |
+
+Identificadores e palavras reservadas são reconhecidos pela mesma regra; no
+fim do lexema, um dicionário diz se ele é reservado. Por isso `sePossivel` é
+um `ID` só.
+
+**Erros léxicos** (`erro lexico: linha L, coluna C: ...`, código 1), sempre
+no caractere que estragou o token:
+
+| Situação | Posição relatada |
+|---|---|
+| `3.`: ponto sem dígito depois | o ponto |
+| `.5`: ponto sem dígito antes | o ponto |
+| escape inválido (`"a\qb"`) | a barra invertida |
+| texto sem aspas de fechamento na mesma linha | a aspa de abertura |
+| `/*` nunca fechado | onde o comentário **começou** |
+| caractere fora da linguagem (`@`, `!` sozinho, `#`…) | o caractere |
+
+---
+
+## Entrega 2: gramática (EBNF)
+
+```ebnf
+programa    = { funcao } FIM_ARQUIVO ;
+funcao      = "funcao" tipo_ret ID "(" [ parametro { "," parametro } ] ")" bloco ;
+tipo_ret    = tipo | "vazio" ;
+tipo        = "inteiro" | "real" | "logico" | "texto" ;
+parametro   = tipo ID ;
+bloco       = "{" { comando } "}" ;
+
+comando     = declaracao | atribuicao | chamada ";" | se | enquanto
+            | escreva | retorne | bloco ;
+declaracao  = tipo ID [ "=" expressao ] ";" ;
+atribuicao  = ID "=" expressao ";" ;
+se          = "se" "(" expressao ")" bloco [ "senao" bloco ] ;
+enquanto    = "enquanto" "(" expressao ")" bloco ;
+escreva     = "escreva" "(" expressao ")" ";" ;
+retorne     = "retorne" [ expressao ] ";" ;
+
+(* um nivel por precedencia, do mais fraco (1) para o mais forte (8) *)
+expressao   = ou ;
+ou          = e          { "ou" e } ;                               (* 1 *)
+e           = igualdade  { "e" igualdade } ;                        (* 2 *)
+igualdade   = relacional { ( "==" | "!=" ) relacional } ;           (* 3 *)
+relacional  = aditiva    { ( "<" | "<=" | ">" | ">=" ) aditiva } ;  (* 4 *)
+aditiva     = multiplic  { ( "+" | "-" ) multiplic } ;              (* 5 *)
+multiplic   = unario     { ( "*" | "/" | "%" ) unario } ;           (* 6 *)
+unario      = ( "nao" | "-" ) unario | primario ;                   (* 7 *)
+primario    = INTEIRO | REAL | LOGICO | TEXTO                       (* 8 *)
+            | chamada | ID | "(" expressao ")" ;
+chamada     = ID "(" [ expressao { "," expressao } ] ")" ;
+```
+
+**Como a precedência está codificada:** cada nível só enxerga como operando o
+nível imediatamente mais forte, então um operador mais forte fica sempre mais
+fundo na árvore. A repetição `{ op operando }` vira um **laço** no parser
+(`Parser.binario`), que pendura cada novo nó por cima do anterior e por isso
+associa à esquerda: `10 - 4 - 3` vira `(10 - 4) - 3`. `nao` e `-` unário
+chamam a si mesmos e associam à direita. Os seis níveis binários são uma
+tabela (`NIVEIS_BINARIOS`) e uma única função recursiva no nível; os níveis 7
+e 8 são `unario` e `primario`.
+
+No `comando`, um `ID` decide pelo token seguinte: `=` é atribuição, `(` é
+chamada.
+
+**Erros sintáticos** apontam o token que **apareceu** no lugar do esperado.
+Faltando `;` no fim da linha 2, o erro sai no primeiro token da linha 3.
+
+```
+$ ./compilar --ast prog.mpl      # escreva(10 - 4 - 3); escreva(1 + 2 * 3);
+      escreva
+        binario -
+          binario -
+            literal inteiro 10
+            literal inteiro 4
+          literal inteiro 3
+      escreva
+        binario +
+          literal inteiro 1
+          binario *
+            literal inteiro 2
+            literal inteiro 3
+```
+
+---
+
+## Entrega 3: escopos
+
+Usamos uma **pilha de escopos** durante a análise e, ao lado dela, uma
+**lista de todos os escopos em ordem de abertura**. Cada `Escopo` tem
+número, descrição, ponteiro para o pai e um dicionário de símbolos (que
+preserva a ordem de declaração). Abrir um bloco é empilhar; fechar é
+desempilhar; procurar um nome é percorrer a pilha do topo para a base, e o
+primeiro que achar vence. É isso que dá o sombreamento, e a variável de fora
+"volta" sozinha quando o bloco interno sai da pilha.
+
+Escolhemos a pilha porque ela espelha exatamente a regra da linguagem: um
+nome só é visível enquanto o seu bloco está aberto. A lista paralela existe
+porque o `--tabela` precisa de todos os escopos depois que a pilha já
+esvaziou, com o número e o pai de cada um.
+
+Para a Entrega 4, cada parâmetro ou variável recebe na declaração um **slot**
+no registro de ativação da sua função (contador por função). Dois `x` em
+blocos diferentes ficam com slots diferentes, e o gerador não precisa mais
+saber de escopos.
+
+Regras de organização:
+
+- **Duas passadas.** A primeira coleta a assinatura de todas as funções no
+  escopo 0, então dá para chamar uma função antes de ela aparecer. A segunda
+  percorre os corpos.
+- O corpo de função abre **dois** escopos: `funcao <nome>` (parâmetros) e
+  `bloco` (variáveis locais). Todo bloco abre um, inclusive os de `se`,
+  `senao`, `enquanto` e os blocos soltos.
+- Na declaração `inteiro x = expr;`, a expressão é conferida **antes** de `x`
+  entrar no escopo, então o `x` da direita é o de fora.
+
+O que é recusado: nome repetido no mesmo escopo (variável, parâmetro ou
+função), variável ou função não declarada, operador com tipos fora da tabela
+3.2, qualquer conversão que não seja `inteiro → real` (atribuição, argumento,
+retorno), número errado de argumentos, função `vazio` dentro de expressão,
+condição não `logico`, `retorne` com/sem valor no tipo errado, falta de
+`principal` ou `principal` com parâmetro ou retorno não `vazio`.
+
+**Garantia de retorno** (`garante_retorno`), sempre pela estrutura do código e
+nunca pelo valor das condições: `retorne` garante; um bloco garante se algum
+comando dele garante; `se` só garante com `senao` e os dois lados garantindo;
+`enquanto` nunca garante.
+
+---
+
+## Entrega 4: código intermediário, `.mplb` e VM
+
+### Código de três endereços (`--ir`)
+
+No máximo um operador por linha. A conversão `inteiro → real` aparece
+explícita (`paraReal`), sempre **depois** da operação inteira. Por isso
+`real a = 7 / 2;` dá `3.000000`.
+
+```
+funcao fatorial inteiro (n inteiro)
+  t0 = n <= 1
+  seFalso t0 desvie L0
+  retorne 1
+  desvie L1
+L0:
+  t1 = n - 1
+  t2 = chama fatorial t1
+  t3 = n * t2
+  retorne t3
+L1:
+  retorne
+fim
+```
+
+`se` gera `seFalso cond desvie Lsenao` e, com `senao`, um `desvie Lfim`;
+`enquanto` gera `Linicio:` … `seFalso cond desvie Lfim` … `desvie Linicio`.
+Variáveis sombreadas aparecem como `x`, `x.2`, `x.3`.
+
+### O `.mplb`
+
+Texto, uma instrução por linha, com comentários `#` mostrando o nome de cada
+slot:
+
+```
+.funcao fatorial 1 5    # inteiro (n inteiro)
+  .linha 2
+  CARREGA 0             # n
+  EMPILHA_I 1
+  MENOR_IGUAL
+  GUARDA 1              # t0
+  CARREGA 1             # t0
+  DESVIA_SE_FALSO L0
+  ...
+.fim
+```
+
+### Conjunto de instruções da VM
+
+A VM é uma máquina de pilha. "Desempilha b, a" quer dizer que `b` estava no
+topo.
+
+| Instrução | O que faz com a pilha |
+|---|---|
+| `EMPILHA_I n` | empilha o inteiro `n` |
+| `EMPILHA_R x` | empilha o real `x` |
+| `EMPILHA_L verdadeiro\|falso` | empilha o lógico |
+| `EMPILHA_T "..."` | empilha o texto (escapes na forma do fonte) |
+| `CARREGA s` | empilha o valor do slot `s` do registro de ativação atual |
+| `GUARDA s` | desempilha um valor e grava no slot `s` |
+| `SOMA_I` / `SOMA_R` | desempilha b, a; empilha a + b |
+| `SUB_I` / `SUB_R` | desempilha b, a; empilha a − b |
+| `MUL_I` / `MUL_R` | desempilha b, a; empilha a × b |
+| `DIV_I` | desempilha b, a; empilha a / b **truncado em direção a zero**; b = 0 é erro de execução |
+| `DIV_R` | desempilha b, a; empilha a / b real; b = 0 é erro de execução |
+| `RESTO_I` | desempilha b, a; empilha a − b·(a DIV_I b): o **sinal do dividendo**; b = 0 é erro |
+| `CONCATENA` | desempilha b, a (textos); empilha a seguido de b |
+| `NEG_I` / `NEG_R` | troca o topo por −topo |
+| `PARA_REAL` | troca o inteiro do topo pelo mesmo valor em real |
+| `IGUAL` `DIFERENTE` | desempilha b, a; empilha o lógico a == b / a != b |
+| `MENOR` `MENOR_IGUAL` `MAIOR` `MAIOR_IGUAL` | desempilha b, a; empilha o lógico a < b, a ≤ b, a > b, a ≥ b |
+| `E` / `OU` | desempilha b, a (lógicos); empilha a e b / a ou b (os dois lados já foram avaliados) |
+| `NAO` | troca o lógico do topo pelo contrário |
+| `DESVIA L` | continua no rótulo `L` |
+| `DESVIA_SE_FALSO L` | desempilha um lógico; se for falso, continua em `L` |
+| `CHAMA f n` | desempilha os `n` argumentos, cria um **registro de ativação** novo para `f` com eles nos slots 0..n−1, guarda o ponto de volta e entra em `f`; mais de 100 000 registros aninhados é estouro de pilha (erro de execução) |
+| `RETORNA` | o valor de retorno fica no topo; descarta o registro atual e volta para quem chamou |
+| `RETORNA_VAZIO` | descarta o registro atual e volta, sem valor; no `principal` encerra o programa |
+| `DESCARTA` | desempilha e joga fora (função não-`vazio` chamada como comando) |
+| `ESCREVE_I` `ESCREVE_R` `ESCREVE_L` `ESCREVE_T` | desempilha e imprime com quebra de linha, no formato da seção 4.5 (`real` com 6 casas, `verdadeiro`/`falso`) |
+
+Diretivas (não executam nada): `.mplb 1` (versão), `.entrada principal`,
+`.funcao <nome> <nparams> <nslots>`, `.fim`, `.linha <n>` (linha do fonte dos
+comandos seguintes, usada nas mensagens de erro de execução) e `Lk:`
+(rótulo).
+
+**Registro de ativação:** cada `CHAMA` empilha `(função, pc de volta, slots,
+linha)` numa pilha própria da VM. Os slots são, em ordem, os parâmetros, as
+variáveis locais e os temporários da função. O laço da VM é iterativo, então
+a recursão do programa MPL não usa a pilha do Python. Erros de execução saem
+como `erro execucao: linha L, coluna 1: ...` com código 2, na linha do
+comando que estava rodando.
+
+### Programa próprio: `exemplos/demonstracao.mpl`
+
+Torre de Hanói recursiva (com texto e concatenação), raiz quadrada pelo
+método de Newton (reais e conversão `inteiro → real` no argumento), sequência
+de Collatz (laço, `%`, `se/senao`) e sombreamento de variável num bloco de
+`enquanto`. A saída esperada está em `exemplos/demonstracao.saida`.
+
+```bash
+./compilar exemplos/demonstracao.mpl && ./executar exemplos/demonstracao.mplb
+```
+
+---
+
+<details>
+<summary>Enunciado original do trabalho (README do esqueleto)</summary>
+
 # Minha pequena linguagem
 
 Trabalho semestral de **Compiladores** — Ciência da Computação, UNISAGRADO.  
@@ -105,3 +392,4 @@ git pull https://github.com/LuizRMSilva1973/compiladores-lab.git main
 2. Abram a [página do trabalho](https://profluiz.mantovanitec.com/disciplinas/aulas/compiladores/trabalho.html).
 3. No formulário do fim da página: escolham a entrega, identifiquem os integrantes (nome, RA e e-mail), colem a URL do repositório e anexem o `evidencias/verificacao-N.txt`.
 4. Cada integrante recebe uma cópia por e-mail. **Guardem esse e-mail**: é o comprovante.
+</details>

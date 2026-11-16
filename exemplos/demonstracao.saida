@@ -1,0 +1,20 @@
+Torre de Hanoi com 3 discos:
+  disco pequeno: A -> C
+  disco medio: A -> B
+  disco pequeno: C -> B
+  disco grande: A -> C
+  disco pequeno: B -> A
+  disco medio: B -> C
+  disco pequeno: A -> C
+movimentos:
+7
+Raiz quadrada por Newton:
+1.414214
+12.000000
+Passos de Collatz ate chegar em 1:
+111
+18
+18
+27
+-3
+-1

@@ -393,3 +393,5 @@ git pull https://github.com/LuizRMSilva1973/compiladores-lab.git main
 3. No formulário do fim da página: escolham a entrega, identifiquem os integrantes (nome, RA e e-mail), colem a URL do repositório e anexem o `evidencias/verificacao-N.txt`.
 4. Cada integrante recebe uma cópia por e-mail. **Guardem esse e-mail**: é o comprovante.
 </details>
+
+**Integrantes:** Gabriel Gebra (RA 23110437) email: gagebrabr@gmail.com e Kauê de Alcântara Ribeiro (RA 23110121) email: Kauealbr@gmail.com
